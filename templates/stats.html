@@ -1,0 +1,32 @@
+<div class="list list-gap-20 list-with-separator">
+    <div class="flex justify-between text-center">
+        <div class="flex flex-column">
+            <span class="color-highlight size-h3">{{ stats.today }}</span>
+            <span class="size-h6">Today</span>
+        </div>
+        <div class="flex flex-column">
+            <span class="color-highlight size-h3">{{ stats.total }}</span>
+            <span class="size-h6">{{ stats.days }} Days</span>
+        </div>
+        <div class="flex flex-column">
+            <span class="color-highlight size-h3">{{ stats.current_streak }}</span>
+            <span class="size-h6">Streak</span>
+        </div>
+        <div class="flex flex-column">
+            <span class="color-highlight size-h3">{{ stats.longest_streak }}</span>
+            <span class="size-h6">Top Streak</span>
+        </div>
+        <div class="flex flex-column">
+            <span class="color-highlight size-h3">{{ stats.high_score }}</span>
+            <span class="size-h6">Best Day</span>
+        </div>
+    </div>
+    {% if show_quartiles %}
+    <div class="flex justify-center text-center">
+        <div class="flex flex-column">
+            <span class="color-highlight size-h3">{{ quartiles_string }}</span>
+            <span class="size-h6">Quartiles</span>
+        </div>
+    </div>
+    {% endif %}
+</div>
