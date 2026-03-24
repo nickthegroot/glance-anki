@@ -1,18 +1,30 @@
-<svg style="margin:auto;max-width:initial;" height="{{ svg_height }}" viewBox="0 0 775 120" xmlns="http://www.w3.org/2000/svg">
-    {% set cell_size = 12 %}
-    {% set cell_gap = 2 %}
-    {% set max_rows = 7 %}
-    {% set label_offset = 30 %}
-    {% set top_offset = 20 %}
+{% set cell_size = 12 %}
+{% set cell_gap = 2 %}
+{% set label_offset = 30 %}
+{% set top_offset = 20 %}
+<svg style="display:block;" width="100%" height="{{ viewbox_height }}" viewBox="0 0 {{ viewbox_width }} {{ viewbox_height }}" xmlns="http://www.w3.org/2000/svg">
+    <style>
+        .anki-cell-bg { fill: var(--color-widget-background-highlight); }
+        .anki-cell-fg { fill: var(--color-primary); }
+    </style>
     {% for (col, month) in month_labels %}
-        <text x="{{ col * (cell_size + cell_gap) + label_offset }}" y="{{ top_offset - 5 }}" font-size="{{ font_size }}" fill="var(--color-text-base)">{{ month }}</text>
+        <text x="{{ col * (cell_size + cell_gap) + label_offset }}" y="{{ top_offset - 5 }}" font-size="9" fill="var(--color-text-base)">{{ month }}</text>
     {% endfor %}
     {% for (row, label) in weekday_labels %}
-        <text x="0" y="{{ top_offset + row * (cell_size + cell_gap) + 10 }}" font-size="{{ font_size }}" fill="var(--color-text-base)">{{ label }}</text>
+        <text x="0" y="{{ top_offset + row * (cell_size + cell_gap) + 10 }}" font-size="9" fill="var(--color-text-base)">{{ label }}</text>
     {% endfor %}
     {% for cell in cells %}
-        <rect x="{{ cell.col * (cell_size + cell_gap) + label_offset }}" y="{{ top_offset + cell.row * (cell_size + cell_gap) }}" width="{{ cell_size }}" height="{{ cell_size }}" fill="{{ cell.color }}" rx="{{ cell_radius }}" ry="{{ cell_radius }}">
+        {% let x = cell.col * (cell_size + cell_gap) + label_offset %}
+        {% let y = top_offset + cell.row * (cell_size + cell_gap) %}
+        {% if cell.opacity.is_empty() %}
+        <rect x="{{ x }}" y="{{ y }}" width="{{ cell_size }}" height="{{ cell_size }}" class="anki-cell-bg" rx="{{ cell_radius }}" ry="{{ cell_radius }}">
             <title>{{ cell.hover_text }}</title>
         </rect>
+        {% else %}
+        <rect x="{{ x }}" y="{{ y }}" width="{{ cell_size }}" height="{{ cell_size }}" class="anki-cell-bg" rx="{{ cell_radius }}" ry="{{ cell_radius }}"/>
+        <rect x="{{ x }}" y="{{ y }}" width="{{ cell_size }}" height="{{ cell_size }}" class="anki-cell-fg" opacity="{{ cell.opacity }}" rx="{{ cell_radius }}" ry="{{ cell_radius }}">
+            <title>{{ cell.hover_text }}</title>
+        </rect>
+        {% endif %}
     {% endfor %}
 </svg>

@@ -44,46 +44,25 @@ ANKI_COLLECTION_PATH=~/.local/share/Anki2/"User 1"/collection.anki2 cargo run --
 > [!TIP]
 > All query parameters are optional, with sane defaults.
 
+All parameters use `kebab-case`.
+
+### Shared parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `deck` | all decks | Deck name to filter by. Includes sub-decks. |
+| `days` | `30` | Number of past days to display. |
+| `timezone` | server timezone | IANA timezone string (e.g. `America/New_York`). Used to compute the daily rollover boundary. |
+
 ### Graph
 
-Centered review heatmap.
+Review heatmap. Cell colors are driven by your Glance theme's primary color automatically.
 
 ```yml
 - type: extension
   url: http://localhost:8080/graph
   allow-potentially-dangerous-html: true
   parameters:
-    deck: Japanese         # omit to show all decks
-    days: 30               # number of past days to display
-    background-color: "#1d2025"  # cell background
-    primary-color: "#f3afaf"     # cell foreground
-    svg-height: 150
-    font-size: 9
-    transition-hue: false  # if true, interpolates hue between bg and primary
-```
-
-### Stats
-
-Statistics summary.
-
-```yml
-- type: extension
-  url: http://localhost:8080/stats
-  allow-potentially-dangerous-html: true
-  parameters:
     deck: Japanese
     days: 30
-    show_quartiles: true
-```
-
-### Graph SVG
-
-Just the raw SVG graph.
-
-```yml
-- type: extension
-  url: http://localhost:8080/graph_svg
-  allow-potentially-dangerous-html: true
-  parameters:
-    ... # accepts all the same parameters as /graph
 ```

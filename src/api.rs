@@ -1,133 +1,202 @@
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, web};
+use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use askama::Template;
+use chrono::Datelike;
 use log::{error, info};
 use std::collections::HashMap;
 
+use crate::anki::AnkiStats;
 use crate::anki::fetch_anki_stats;
-use crate::color;
 use crate::config::Config;
-use crate::templates::{AnkiGraphHtmlTemplate, AnkiStatsTemplate, AnkiSvgGraphTemplate, GraphCell};
+use crate::templates::{AnkiGraphHtmlTemplate, AnkiSvgGraphTemplate, GraphCell};
 
-fn parse_params(req: &HttpRequest) -> HashMap<String, String> {
-    url::form_urlencoded::parse(req.query_string().as_bytes())
-        .into_owned()
-        .collect()
+type QueryParams = web::Query<HashMap<String, String>>;
+
+// ---------------------------------------------------------------------------
+// Request parameters
+// ---------------------------------------------------------------------------
+
+struct WidgetParams {
+    deck: Option<String>,
+    days: u32,
+    timezone: Option<String>,
 }
 
-fn param_str<'a>(params: &'a HashMap<String, String>, key: &str, default: &'a str) -> String {
-    params
-        .get(key)
-        .cloned()
-        .unwrap_or_else(|| default.to_string())
+impl WidgetParams {
+    fn from_query(params: &HashMap<String, String>, config: &Config) -> Self {
+        Self {
+            deck: params.get("deck").cloned().filter(|d| !d.is_empty()),
+            days: params
+                .get("days")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(config.default_days),
+            timezone: params.get("timezone").cloned().filter(|s| !s.is_empty()),
+        }
+    }
 }
 
-fn param_bool(params: &HashMap<String, String>, key: &str, default: bool) -> bool {
-    params
-        .get(key)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+// ---------------------------------------------------------------------------
+// Stats loading
+// ---------------------------------------------------------------------------
+
+async fn load_stats(config: &Config, params: &WidgetParams) -> Result<AnkiStats, String> {
+    let collection_path = config.collection_path.clone();
+    let deck = params.deck.clone();
+    let days = params.days;
+    let timezone = params.timezone.clone();
+
+    tokio::task::spawn_blocking(move || {
+        fetch_anki_stats(&collection_path, deck.as_deref(), days, timezone.as_deref())
+    })
+    .await
+    .map_err(|e| format!("Internal error: {}", e))?
+    .map_err(|e| format!("Error: {}", e))
 }
 
-fn deck_and_days(params: &HashMap<String, String>, config: &Config) -> (Option<String>, u32) {
-    let deck = params.get("deck").cloned().filter(|d| !d.is_empty());
-    let days = params
-        .get("days")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(config.days);
-    (deck, days)
+// ---------------------------------------------------------------------------
+// Graph building
+// ---------------------------------------------------------------------------
+
+const GRID_ROWS: usize = 7;
+const CELL_SIZE: usize = 12;
+const CELL_GAP: usize = 2;
+const LABEL_OFFSET: usize = 30;
+const TOP_OFFSET: usize = 20;
+const MIN_CELL_OPACITY: f32 = 0.15;
+const DEFAULT_CELL_RADIUS: u32 = 2;
+const WEEKDAY_LABELS: &[(usize, &str)] = &[(1, "Mon"), (3, "Wed"), (5, "Fri")];
+
+fn first_date_weekday(stats: &AnkiStats) -> usize {
+    stats
+        .daily_reviews
+        .first()
+        .and_then(|(date, _, _)| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+        .map(|d| d.weekday().num_days_from_sunday() as usize)
+        .unwrap_or(0)
 }
 
-fn build_svg_template<'a>(
-    stats: &'a crate::anki::AnkiStats,
-    params: &HashMap<String, String>,
-    config: &Config,
-) -> AnkiSvgGraphTemplate<'a> {
-    let primary_color = param_str(params, "primary-color", &config.fg);
-    let bg_color = param_str(params, "background-color", &config.bg);
-    let color_shades = color::derive_color_shades_with_bg(
-        &primary_color,
-        &bg_color,
-        param_bool(params, "transition-hue", config.transition_hue),
-    );
+fn build_graph_cells(stats: &AnkiStats) -> Vec<GraphCell> {
+    let max_count = stats
+        .daily_reviews
+        .iter()
+        .map(|(_, c, _)| *c)
+        .max()
+        .unwrap_or(0);
 
-    const ROWS: usize = 7;
-    let cells = stats
+    let first_weekday = first_date_weekday(stats);
+
+    stats
         .daily_reviews
         .iter()
         .enumerate()
         .map(|(i, (date, count, label))| {
-            let color = match count {
-                c if *c > 15 => color_shades[4].clone(),
-                c if *c > 8 => color_shades[3].clone(),
-                c if *c > 4 => color_shades[2].clone(),
-                c if *c > 0 => color_shades[1].clone(),
-                _ => color_shades[0].clone(),
-            };
+            let opacity = cell_opacity(*count, max_count);
+            let row = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .map(|d| d.weekday().num_days_from_sunday() as usize)
+                .unwrap_or(i % GRID_ROWS);
             GraphCell {
                 date: date.clone(),
                 count: *count,
-                col: i / ROWS,
-                row: i % ROWS,
-                color,
+                col: (first_weekday + i) / GRID_ROWS,
+                row,
+                opacity,
                 hover_text: label.clone(),
             }
         })
-        .collect();
+        .collect()
+}
 
-    let mut month_labels: Vec<(usize, String)> = Vec::new();
+fn cell_opacity(count: u32, max_count: u32) -> String {
+    if count == 0 || max_count == 0 {
+        return String::new();
+    }
+    let opacity = MIN_CELL_OPACITY + (1.0 - MIN_CELL_OPACITY) * (count as f32 / max_count as f32);
+    format!("{:.3}", opacity)
+}
+
+fn build_month_labels(stats: &AnkiStats) -> Vec<(usize, String)> {
+    let first_weekday = first_date_weekday(stats);
+    let mut labels: Vec<(usize, String)> = Vec::new();
     let mut last_month = String::new();
     for (i, (date, _, _)) in stats.daily_reviews.iter().enumerate() {
         if let Ok(d) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
             let month = d.format("%b").to_string();
             if month != last_month {
-                month_labels.push((i / ROWS, month.clone()));
+                labels.push(((first_weekday + i) / GRID_ROWS, month.clone()));
                 last_month = month;
             }
         }
     }
+    labels
+}
+
+fn build_svg_template(stats: &AnkiStats) -> AnkiSvgGraphTemplate {
+    let cells = build_graph_cells(stats);
+    let num_cols = cells.iter().map(|c| c.col).max().unwrap_or(0) + 1;
+    let viewbox_width = num_cols * (CELL_SIZE + CELL_GAP) + LABEL_OFFSET;
+    let viewbox_height = TOP_OFFSET + GRID_ROWS * (CELL_SIZE + CELL_GAP);
 
     AnkiSvgGraphTemplate {
-        stats,
-        max_count: stats
-            .daily_reviews
-            .iter()
-            .map(|(_, c, _)| *c)
-            .max()
-            .unwrap_or(0),
         cells,
-        primary_color,
-        color_shades,
-        month_labels,
-        weekday_labels: config.weekday_labels.clone(),
-        svg_height: param_str(params, "svg-height", &config.svg_height),
-        cell_radius: config.cell_radius,
-        font_size: param_str(params, "font-size", &config.font_size),
+        viewbox_width,
+        viewbox_height,
+        month_labels: build_month_labels(stats),
+        weekday_labels: WEEKDAY_LABELS.to_vec(),
+        cell_radius: DEFAULT_CELL_RADIUS,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Response helpers
+// ---------------------------------------------------------------------------
 
 fn widget_title(deck: &str) -> String {
     format!("Anki – {}", deck)
 }
 
-fn quartiles_string(quartiles: &[u32; 5]) -> String {
-    quartiles
-        .iter()
-        .map(|q| q.to_string())
-        .collect::<Vec<_>>()
-        .join(" ")
+fn html_response(body: String, deck: &str) -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("text/html")
+        .insert_header(("Widget-Title", widget_title(deck).as_str()))
+        .insert_header(("Widget-Content-Type", "html"))
+        .body(body)
 }
 
-async fn load_stats(
-    config: &Config,
-    deck: Option<String>,
-    days: u32,
-) -> Result<crate::anki::AnkiStats, String> {
-    let collection_path = config.collection_path.clone();
-    tokio::task::spawn_blocking(move || fetch_anki_stats(&collection_path, deck.as_deref(), days))
-        .await
-        .map_err(|e| format!("Internal error: {}", e))?
-        .map_err(|e| format!("Error: {}", e))
+fn render_or_500<T: Template>(template: T) -> Result<String, HttpResponse> {
+    template
+        .render()
+        .map_err(|e| HttpResponse::InternalServerError().body(e.to_string()))
 }
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+async fn graph_html_handler(params: QueryParams) -> impl Responder {
+    let config = Config::from_env();
+    let widget_params = WidgetParams::from_query(&params, &config);
+    info!(
+        "GET /graph deck={:?} days={}",
+        widget_params.deck, widget_params.days
+    );
+
+    match load_stats(&config, &widget_params).await {
+        Ok(stats) => {
+            let svg = build_svg_template(&stats);
+            match render_or_500(AnkiGraphHtmlTemplate { svg }) {
+                Ok(body) => html_response(body, &stats.deck),
+                Err(e) => e,
+            }
+        }
+        Err(e) => {
+            error!("{}", e);
+            HttpResponse::InternalServerError().body(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
 
 pub async fn run_api_server() -> std::io::Result<()> {
     let config = Config::from_env();
@@ -137,103 +206,8 @@ pub async fn run_api_server() -> std::io::Result<()> {
     );
 
     let port = config.port;
-    HttpServer::new(|| {
-        App::new()
-            .route("/stats", web::get().to(stats_handler))
-            .route("/graph_svg", web::get().to(svg_graph_handler))
-            .route("/graph", web::get().to(graph_html_handler))
-    })
-    .bind(("0.0.0.0", port))?
-    .run()
-    .await
-}
-
-async fn stats_handler(req: HttpRequest) -> impl Responder {
-    let params = parse_params(&req);
-    let config = Config::from_env();
-    let (deck, days) = deck_and_days(&params, &config);
-    let show_quartiles = param_bool(&params, "show_quartiles", true);
-
-    info!("GET /stats deck={:?} days={}", deck, days);
-
-    match load_stats(&config, deck, days).await {
-        Ok(stats) => {
-            let template = AnkiStatsTemplate {
-                show_quartiles,
-                quartiles_string: quartiles_string(&stats.quartiles),
-                stats: &stats,
-            };
-            match template.render() {
-                Ok(body) => HttpResponse::Ok()
-                    .content_type("text/html")
-                    .insert_header(("Widget-Title", widget_title(&stats.deck).as_str()))
-                    .insert_header(("Widget-Content-Type", "html"))
-                    .body(body),
-                Err(e) => {
-                    error!("Template error: {}", e);
-                    HttpResponse::InternalServerError().body(e.to_string())
-                }
-            }
-        }
-        Err(e) => {
-            error!("{}", e);
-            HttpResponse::InternalServerError().body(e)
-        }
-    }
-}
-
-async fn svg_graph_handler(req: HttpRequest) -> impl Responder {
-    let params = parse_params(&req);
-    let config = Config::from_env();
-    let (deck, days) = deck_and_days(&params, &config);
-
-    info!("GET /graph_svg deck={:?} days={}", deck, days);
-
-    match load_stats(&config, deck, days).await {
-        Ok(stats) => {
-            let template = build_svg_template(&stats, &params, &config);
-            match template.render() {
-                Ok(body) => HttpResponse::Ok()
-                    .content_type("image/svg+xml")
-                    .insert_header(("Widget-Title", widget_title(&stats.deck).as_str()))
-                    .insert_header(("Widget-Content-Type", "html"))
-                    .body(body),
-                Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
-            }
-        }
-        Err(e) => {
-            error!("{}", e);
-            HttpResponse::InternalServerError().body(e)
-        }
-    }
-}
-
-async fn graph_html_handler(req: HttpRequest) -> impl Responder {
-    let params = parse_params(&req);
-    let config = Config::from_env();
-    let (deck, days) = deck_and_days(&params, &config);
-
-    info!("GET /graph deck={:?} days={}", deck, days);
-
-    match load_stats(&config, deck, days).await {
-        Ok(stats) => {
-            let svg = build_svg_template(&stats, &params, &config);
-            let template = AnkiGraphHtmlTemplate {
-                quartiles: quartiles_string(&stats.quartiles),
-                svg,
-            };
-            match template.render() {
-                Ok(body) => HttpResponse::Ok()
-                    .content_type("text/html")
-                    .insert_header(("Widget-Title", widget_title(&stats.deck).as_str()))
-                    .insert_header(("Widget-Content-Type", "html"))
-                    .body(body),
-                Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
-            }
-        }
-        Err(e) => {
-            error!("{}", e);
-            HttpResponse::InternalServerError().body(e)
-        }
-    }
+    HttpServer::new(|| App::new().route("/graph", web::get().to(graph_html_handler)))
+        .bind(("0.0.0.0", port))?
+        .run()
+        .await
 }
